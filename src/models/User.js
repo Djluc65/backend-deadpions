@@ -95,6 +95,23 @@ const userSchema = new mongoose.Schema({
   lastPasswordChange: {
     type: Date,
     default: null
+  },
+  // --- Monetization & Quotas ---
+  isPremium: {
+    type: Boolean,
+    default: false
+  },
+  subscriptionEndDate: {
+    type: Date,
+    default: null
+  },
+  dailyCreatedRooms: {
+    type: Number,
+    default: 0
+  },
+  lastRoomCreationDate: {
+    type: Date,
+    default: null // Used to reset daily counter
   }
 }, {
   timestamps: true

@@ -6,6 +6,7 @@ const { checkBody } = require('../middleware/validate');
 const { OAuth2Client } = require('google-auth-library');
 const emailService = require('../services/emailService');
 const { validationResult } = require('express-validator');
+const { EARLY_ACCESS_END_DATE } = require('../config');
 
 const RESPONSE_DELAY_MS = 300;
 
@@ -61,6 +62,8 @@ exports.register = async (req, res) => {
       user.refreshToken = refreshToken;
       await user.save();
 
+      const isEarlyAccess = new Date() < EARLY_ACCESS_END_DATE;
+
       res.status(201).json({
         _id: user._id,
         pseudo: user.pseudo,
@@ -69,6 +72,11 @@ exports.register = async (req, res) => {
         avatar: user.avatar,
         country: user.country,
         stats: user.stats,
+        isPremium: isEarlyAccess || user.isPremium,
+        isEarlyAccess: isEarlyAccess,
+        earlyAccessEndDate: isEarlyAccess ? EARLY_ACCESS_END_DATE : null,
+        subscriptionEndDate: user.subscriptionEndDate,
+        dailyCreatedRooms: user.dailyCreatedRooms,
         token: accessToken,
         refreshToken: refreshToken
       });
@@ -253,6 +261,8 @@ exports.login = async (req, res) => {
       user.refreshToken = refreshToken;
       await user.save();
 
+      const isEarlyAccess = new Date() < EARLY_ACCESS_END_DATE;
+
       res.json({
         _id: user._id,
         pseudo: user.pseudo,
@@ -261,6 +271,11 @@ exports.login = async (req, res) => {
         avatar: user.avatar,
         country: user.country,
         stats: user.stats,
+        isPremium: isEarlyAccess || user.isPremium,
+        isEarlyAccess: isEarlyAccess,
+        earlyAccessEndDate: isEarlyAccess ? EARLY_ACCESS_END_DATE : null,
+        subscriptionEndDate: user.subscriptionEndDate,
+        dailyCreatedRooms: user.dailyCreatedRooms,
         token: accessToken,
         refreshToken: refreshToken
       });

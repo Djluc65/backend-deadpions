@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const { EARLY_ACCESS_END_DATE } = require('../config');
 
 // Obtenir un utilisateur par ID
 exports.getUserById = async (req, res) => {
@@ -7,7 +8,10 @@ exports.getUserById = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: 'Utilisateur non trouvé.' });
     }
-    res.json(user);
+    const userData = user.toObject();
+    const isEarlyAccess = new Date() < EARLY_ACCESS_END_DATE;
+    userData.isPremium = isEarlyAccess || userData.isPremium;
+    res.json(userData);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Erreur serveur.' });
@@ -88,6 +92,8 @@ exports.updateUser = async (req, res) => {
 
     const updatedUser = await user.save();
 
+    const isEarlyAccess = new Date() < EARLY_ACCESS_END_DATE;
+
     res.json({
       _id: updatedUser._id,
       pseudo: updatedUser.pseudo,
@@ -96,6 +102,11 @@ exports.updateUser = async (req, res) => {
       country: updatedUser.country,
       coins: updatedUser.coins,
       stats: updatedUser.stats,
+      isPremium: isEarlyAccess || updatedUser.isPremium,
+      isEarlyAccess: isEarlyAccess,
+      earlyAccessEndDate: isEarlyAccess ? EARLY_ACCESS_END_DATE : null,
+      subscriptionEndDate: updatedUser.subscriptionEndDate,
+      dailyCreatedRooms: updatedUser.dailyCreatedRooms,
       token: generateToken(updatedUser._id),
     });
   } catch (error) {

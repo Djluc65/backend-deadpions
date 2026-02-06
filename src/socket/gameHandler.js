@@ -1,6 +1,7 @@
 const Game = require('../models/Game');
 const User = require('../models/User');
 const { checkWinner } = require('../utils/gameLogic');
+const { EARLY_ACCESS_END_DATE } = require('../config');
 
 // Queues by bet amount: { 500: [], 1000: [], ... }
 let queues = {};
@@ -282,14 +283,45 @@ module.exports = (io, socket) => {
 
           // Verify and deduct coins for creator if needed
           const userId = createur._id || createur.id;
+          const user = await User.findById(userId);
+
+          if (!user) {
+              socket.emit('error', 'Utilisateur introuvable');
+              return;
+          }
+
+          // --- Quota Check for Free Users ---
+          const isEarlyAccess = new Date() < EARLY_ACCESS_END_DATE;
+          
+          if (!user.isPremium && !isEarlyAccess) {
+              const today = new Date();
+              const lastDate = user.lastRoomCreationDate ? new Date(user.lastRoomCreationDate) : null;
+              
+              // Reset quota if new day
+              if (!lastDate || lastDate.getDate() !== today.getDate() || lastDate.getMonth() !== today.getMonth() || lastDate.getFullYear() !== today.getFullYear()) {
+                  user.dailyCreatedRooms = 0;
+                  user.lastRoomCreationDate = today;
+              }
+
+              if (user.dailyCreatedRooms >= 5) {
+                  socket.emit('error', 'Limite quotidienne de 5 salles atteinte. Passez Premium pour un accès illimité !');
+                  return;
+              }
+
+              user.dailyCreatedRooms += 1;
+              // We will save user later (after coin deduction) or here if no coin deduction needed
+          }
+
           if (betAmount && betAmount > 0) {
-              const user = await User.findById(userId);
-              if (!user || user.coins < betAmount) {
+              if (user.coins < betAmount) {
                    socket.emit('error', 'Solde insuffisant pour créer la partie');
                    return;
               }
               user.coins -= betAmount;
-              await user.save();
+          }
+          
+          await user.save();
+          if (betAmount && betAmount > 0) {
               socket.emit('balance_updated', user.coins);
           }
 

@@ -4,7 +4,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test": "node tests/code-gen.test.js",
+    "test:syntax": "node tests/syntax-check.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",

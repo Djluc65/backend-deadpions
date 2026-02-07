@@ -45,6 +45,7 @@ exports.createPaymentIntent = async (req, res) => {
 
         res.json({
             clientSecret: paymentIntent.client_secret,
+            paymentIntentId: paymentIntent.id,
             pack: pack
         });
     } catch (error) {
@@ -65,11 +66,19 @@ exports.verifyPayment = async (req, res) => {
         const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
         if (paymentIntent.status === 'succeeded') {
-            // Vérifier si déjà traité (idéalement via une table de transactions pour éviter les doublons)
-            // Pour l'instant, on vérifie juste le statut et les métadonnées
             
             if (paymentIntent.metadata.userId !== userId) {
                 return res.status(403).json({ message: 'Utilisateur non autorisé pour ce paiement' });
+            }
+
+            // Vérifier si déjà traité (Idempotency)
+            const existingUser = await User.findById(userId);
+            if (existingUser.processedPaymentIntents && existingUser.processedPaymentIntents.includes(paymentIntentId)) {
+                return res.json({ 
+                    success: true, 
+                    newBalance: existingUser.coins,
+                    message: `Paiement déjà validé.`
+                });
             }
 
             // Créditer les coins
@@ -78,7 +87,10 @@ exports.verifyPayment = async (req, res) => {
             // Mise à jour atomique
             const user = await User.findByIdAndUpdate(
                 userId, 
-                { $inc: { coins: coinsToAdd } },
+                { 
+                    $inc: { coins: coinsToAdd },
+                    $push: { processedPaymentIntents: paymentIntentId }
+                },
                 { new: true }
             );
 
@@ -97,6 +109,53 @@ exports.verifyPayment = async (req, res) => {
         res.status(500).json({ message: 'Erreur lors de la vérification du paiement' });
     }
 };
+
+exports.handleWebhook = async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
+
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+        console.error(`Webhook Error: ${err.message}`);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the event
+    if (event.type === 'payment_intent.succeeded') {
+        const paymentIntent = event.data.object;
+        await handlePaymentSuccess(paymentIntent);
+    }
+
+    // Return a 200 response to acknowledge receipt of the event
+    res.send();
+};
+
+async function handlePaymentSuccess(paymentIntent) {
+    const { userId, coins } = paymentIntent.metadata;
+    const paymentIntentId = paymentIntent.id;
+
+    if (userId && coins) {
+         try {
+             // Vérifier si déjà traité
+             const existingUser = await User.findById(userId);
+             if (existingUser && existingUser.processedPaymentIntents && existingUser.processedPaymentIntents.includes(paymentIntentId)) {
+                 console.log(`[Webhook] Payment ${paymentIntentId} already processed for user ${userId}`);
+                 return;
+             }
+
+             // Update user balance
+             const coinsToAdd = parseInt(coins, 10);
+             await User.findByIdAndUpdate(userId, { 
+                 $inc: { coins: coinsToAdd },
+                 $push: { processedPaymentIntents: paymentIntentId }
+             });
+             console.log(`[Webhook] Added ${coinsToAdd} coins to user ${userId}`);
+         } catch (error) {
+             console.error('[Webhook] Error updating user balance:', error);
+         }
+    }
+}
 
 exports.getKits = (req, res) => {
     res.json(COIN_PACKS);

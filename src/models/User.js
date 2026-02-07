@@ -97,6 +97,10 @@ const userSchema = new mongoose.Schema({
     default: null
   },
   // --- Monetization & Quotas ---
+  processedPaymentIntents: {
+    type: [String],
+    default: []
+  },
   isPremium: {
     type: Boolean,
     default: false

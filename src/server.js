@@ -12,13 +12,14 @@ const userRoutes = require('./routes/user.routes');
 const friendRoutes = require('./routes/friend.routes');
 const chatRoutes = require('./routes/chat.routes');
 const paymentRoutes = require('./routes/payment.routes');
+const paymentController = require('./controllers/payment.controller');
 
 const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: process.env.FRONTEND_URL || "*",
     methods: ["GET", "POST"]
   }
 });
@@ -27,7 +28,13 @@ const io = new Server(server, {
 app.set('io', io);
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "*"
+}));
+
+// Stripe Webhook (Doit être défini avant express.json() pour récupérer le raw body)
+app.post('/stripe-webhook', express.raw({ type: 'application/json' }), paymentController.handleWebhook);
+
 app.use(express.json());
 // Appliquer rate limiter global
 app.use(rateLimiter.globalLimiter);

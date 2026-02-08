@@ -19,7 +19,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "*",
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
@@ -27,10 +27,14 @@ const io = new Server(server, {
 // Make io accessible in routes
 app.set('io', io);
 
-// Middleware
-app.use(cors({
-  origin: process.env.FRONTEND_URL || "*"
-}));
+const corsOptions = {
+  origin: "*", // Autoriser toutes les origines pour le moment pour le débogage
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+};
+
+app.use(cors(corsOptions));
 
 // Stripe Webhook (Doit être défini avant express.json() pour récupérer le raw body)
 app.post('/stripe-webhook', express.raw({ type: 'application/json' }), paymentController.handleWebhook);

@@ -12,6 +12,7 @@ router.use(authMiddleware);
 router.use(checkBan);
 
 router.get('/search', rateLimiter.socialLimiter, searchValidation, validate, userController.searchUsers);
+router.get('/profile', userController.getProfile);
 router.put('/profile', rateLimiter.uploadLimiter, upload.single('avatar'), updateUserValidation, validate, userController.updateUser);
 router.patch('/deactivate', userController.deactivateAccount);
 router.delete('/profile', userController.deleteAccount);

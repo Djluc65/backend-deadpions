@@ -1,6 +1,23 @@
 const User = require('../models/User');
 const { EARLY_ACCESS_END_DATE } = require('../config');
 
+// Obtenir le profil de l'utilisateur courant
+exports.getProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé.' });
+    }
+    const userData = user.toObject();
+    const isEarlyAccess = new Date() < EARLY_ACCESS_END_DATE;
+    userData.isPremium = isEarlyAccess || userData.isPremium;
+    res.json(userData);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
 // Obtenir un utilisateur par ID
 exports.getUserById = async (req, res) => {
   try {

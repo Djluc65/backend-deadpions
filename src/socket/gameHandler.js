@@ -1,7 +1,27 @@
 const Game = require('../models/Game');
 const User = require('../models/User');
+const Transaction = require('../models/Transaction');
 const { checkWinner } = require('../utils/gameLogic');
 const { EARLY_ACCESS_END_DATE } = require('../config');
+
+// Helper for transaction logging
+const logTransaction = async (userId, amount, type, reason, balanceBefore, balanceAfter, metadata = {}) => {
+    try {
+        await Transaction.create({
+            userId,
+            transactionId: `tx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            type,
+            amount,
+            reason,
+            balanceBefore,
+            balanceAfter,
+            status: 'COMPLETEE',
+            metadata
+        });
+    } catch (err) {
+        console.error('Failed to log transaction:', err);
+    }
+};
 
 // Queues by bet amount: { 500: [], 1000: [], ... }
 let queues = {};
@@ -93,16 +113,18 @@ module.exports = (io, socket) => {
               }
 
               // Deduct coin from recipient if betAmount > 0
-              if (game.betAmount > 0) {
-                  const user = await User.findById(recipientId);
-                  if (!user || user.coins < game.betAmount) {
-                       socket.emit('invitation_error', 'Solde insuffisant');
-                       return;
+                  if (game.betAmount > 0) {
+                      const user = await User.findById(recipientId);
+                      if (!user || user.coins < game.betAmount) {
+                           socket.emit('invitation_error', 'Solde insuffisant');
+                           return;
+                      }
+                      const oldBalance = user.coins;
+                      user.coins -= game.betAmount;
+                      await user.save();
+                      await logTransaction(user._id, game.betAmount, 'DEBIT', 'Mise partie Live', oldBalance, user.coins, { gameId });
+                      socket.emit('balance_updated', user.coins);
                   }
-                  user.coins -= game.betAmount;
-                  await user.save();
-                  socket.emit('balance_updated', user.coins);
-              }
 
               // Update game state
               game.players.white = recipientId;
@@ -145,9 +167,11 @@ module.exports = (io, socket) => {
               }
               
               // Deduct coin from recipient
+              const recipientOldBalance = recipient.coins;
               recipient.coins -= bet;
               recipient.currentGame = game._id;
               await recipient.save();
+              await logTransaction(recipient._id, bet, 'DEBIT', 'Mise partie', recipientOldBalance, recipient.coins, { gameId });
               socket.emit('balance_updated', recipient.coins);
 
               // Update game
@@ -196,10 +220,16 @@ module.exports = (io, socket) => {
               }
 
               // Deduct Coins
+              const senderOldBalance = sender.coins;
+              const recipientOldBalance = recipient.coins;
+
               sender.coins -= bet;
               recipient.coins -= bet;
               await sender.save();
               await recipient.save();
+
+              await logTransaction(sender._id, bet, 'DEBIT', 'Mise création partie', senderOldBalance, sender.coins, { opponentId: recipientId });
+              await logTransaction(recipient._id, bet, 'DEBIT', 'Mise rejoindre partie', recipientOldBalance, recipient.coins, { opponentId: senderId });
 
               // Update balances
               io.to(senderId).emit('balance_updated', sender.coins);
@@ -244,7 +274,7 @@ module.exports = (io, socket) => {
               if (recipientSockets.length > 0) activePlayers.set(recipientSockets[0].id, { gameId, userId: recipientId });
 
               // Emit Start
-              io.to(gameId).emit('game_start', {
+              const gameStartData = {
                   gameId,
                   players: {
                       black: { 
@@ -267,7 +297,12 @@ module.exports = (io, socket) => {
                   timeControl,
                   mode: gameMode,
                   tournamentSettings
-              });
+              };
+
+              // Emit to game room AND individual players for redundancy
+              io.to(gameId).emit('game_start', gameStartData);
+              io.to(senderId).emit('game_start', gameStartData);
+              io.to(recipientId).emit('game_start', gameStartData);
           }
 
       } catch (err) {
@@ -312,6 +347,7 @@ module.exports = (io, socket) => {
               // We will save user later (after coin deduction) or here if no coin deduction needed
           }
 
+          const oldBalance = user.coins;
           if (betAmount && betAmount > 0) {
               if (user.coins < betAmount) {
                    socket.emit('error', 'Solde insuffisant pour créer la partie');
@@ -322,6 +358,7 @@ module.exports = (io, socket) => {
           
           await user.save();
           if (betAmount && betAmount > 0) {
+              await logTransaction(user._id, betAmount, 'DEBIT', 'Création Live Room', oldBalance, user.coins, { gameId });
               socket.emit('balance_updated', user.coins);
           }
 
@@ -394,13 +431,26 @@ module.exports = (io, socket) => {
       }
   });
 
-  socket.on('stop_live_room', ({ gameId }) => {
+  socket.on('stop_live_room', async ({ gameId }) => {
       if (liveGames.has(gameId)) {
           const game = liveGames.get(gameId);
-          // Verify creator? 
-          // Assuming the caller is the creator or has rights. 
-          // Ideally check socket.data.userId against game.createur._id
-          // But for now, trust the event + gameId knowledge.
+          
+          // Refund creator if game is waiting and has bet
+          if (game.status === 'waiting' && game.betAmount > 0 && game.players.black) {
+              try {
+                  const user = await User.findById(game.players.black);
+                  if (user) {
+                      const oldBalance = user.coins;
+                      user.coins += game.betAmount;
+                      await user.save();
+                      await logTransaction(user._id, game.betAmount, 'REMBOURSEMENT', 'Annulation Live Room', oldBalance, user.coins, { gameId });
+                      socket.emit('balance_updated', user.coins);
+                  }
+              } catch (err) {
+                  console.error('Error refunding live room creator:', err);
+              }
+          }
+
           liveGames.delete(gameId);
           io.to(gameId).emit('live_room_closed');
           console.log(`Live room ${gameId} stopped manually`);
@@ -430,8 +480,10 @@ module.exports = (io, socket) => {
                                return;
                            }
                            // Deduct coins
+                           const oldBalance = user.coins;
                            user.coins -= game.betAmount;
                            await user.save();
+                           await logTransaction(user._id, game.betAmount, 'DEBIT', 'Mise partie Live', oldBalance, user.coins, { gameId });
                            socket.emit('balance_updated', user.coins);
                        }
 
@@ -586,8 +638,10 @@ module.exports = (io, socket) => {
               return;
           }
 
+          const oldBalance = user.coins;
           user.coins -= betAmount;
           await user.save();
+          await logTransaction(user._id, betAmount, 'DEBIT', 'Création partie personnalisée', oldBalance, user.coins, {});
           socket.emit('balance_updated', user.coins);
 
           const gameMode = mode || 'simple';
@@ -687,9 +741,11 @@ module.exports = (io, socket) => {
               return;
           }
 
+          const oldBalance = user.coins;
           user.coins -= game.betAmount;
           user.currentGame = game._id;
           await user.save();
+          await logTransaction(user._id, game.betAmount, 'DEBIT', 'Rejoindre partie personnalisée', oldBalance, user.coins, { gameId });
           socket.emit('balance_updated', user.coins);
 
           game.players.white = userId;
@@ -753,9 +809,11 @@ module.exports = (io, socket) => {
           // Refund user
           const user = await User.findById(userId);
           if (user) {
+              const oldBalance = user.coins;
               user.coins += game.betAmount;
               user.currentGame = null;
               await user.save();
+              await logTransaction(user._id, game.betAmount, 'REMBOURSEMENT', 'Annulation partie personnalisée', oldBalance, user.coins, { gameId });
               socket.emit('balance_updated', user.coins);
           }
 
@@ -925,9 +983,12 @@ module.exports = (io, socket) => {
       }
 
       // 2. Deduct Coins (Lock funds)
+      const oldBalance = user.coins;
       user.coins -= betAmount;
       await user.save();
       
+      await logTransaction(user._id, betAmount, 'DEBIT', 'Mise matchmaking', oldBalance, user.coins, { queueKey });
+
       // Notify client of new balance
       socket.emit('balance_updated', user.coins);
 
@@ -1063,12 +1124,14 @@ module.exports = (io, socket) => {
         try {
           const user = await User.findById(userId);
           if (user) {
-            user.coins += betAmount;
-            await user.save();
-            socket.emit('balance_updated', user.coins);
-            socket.emit('search_cancelled');
-            console.log(`User ${userId} refunded ${betAmount}`);
-          }
+                const oldBalance = user.coins;
+                user.coins += betAmount;
+                await user.save();
+                await logTransaction(user._id, betAmount, 'REMBOURSEMENT', 'Annulation recherche', oldBalance, user.coins, {});
+                socket.emit('balance_updated', user.coins);
+                socket.emit('search_cancelled');
+                console.log(`User ${userId} refunded ${betAmount}`);
+              }
         } catch (err) {
           console.error('Refund error:', err);
         }
@@ -1150,10 +1213,12 @@ module.exports = (io, socket) => {
                   // Update Players
                   const winnerUser = await User.findById(winnerId);
                   if (winnerUser) {
+                    const oldBalance = winnerUser.coins;
                     winnerUser.coins += winnerGain;
                     winnerUser.stats.wins += 1;
                     winnerUser.stats.gamesPlayed += 1;
                     await winnerUser.save();
+                    await logTransaction(winnerUser._id, winnerGain, 'CREDIT', 'Gain victoire (forfait)', oldBalance, winnerUser.coins, { gameId, reason: 'timeout' });
                     io.to(activePlayers.get(socket.id)?.socketId || socket.id).emit('balance_updated', winnerUser.coins);
                   }
 
@@ -1176,7 +1241,11 @@ module.exports = (io, socket) => {
                 winnerId,
                 gains: isLive ? 0 : (game.betAmount * 2 * 0.9),
                 reason: 'timeout',
-                timeouts: game.timeouts[player]
+                timeouts: game.timeouts[player],
+                updatedCoins: !isLive ? {
+                    [winnerId]: winnerUser.coins,
+                    [loserId]: loserUser.coins
+                } : undefined
               });
               return;
           }
@@ -1311,7 +1380,14 @@ module.exports = (io, socket) => {
                     winnerId: winnerId,
                     score: game.tournamentSettings.score,
                     reason: seriesReason,
-                    gains: isLive ? 0 : (seriesWinner ? Math.floor(game.betAmount * 2 * 0.9) : game.betAmount) // Gain displayed
+                    gains: isLive ? 0 : (seriesWinner ? Math.floor(game.betAmount * 2 * 0.9) : game.betAmount), // Gain displayed
+                    updatedCoins: (!isLive && seriesWinner) ? {
+                        [winnerId]: winnerUser.coins,
+                        [loserId]: loserUser.coins
+                    } : (!isLive && !seriesWinner) ? {
+                        [game.players.black]: p1.coins,
+                        [game.players.white]: p2.coins
+                    } : undefined
                 });
 
             } else {
@@ -1408,10 +1484,81 @@ module.exports = (io, socket) => {
         io.to(gameId).emit('game_over', {
           winner,
           winnerId,
-          gains: isLive ? 0 : (game.betAmount * 2 * 0.9)
+          gains: isLive ? 0 : (game.betAmount * 2 * 0.9),
+          updatedCoins: !isLive ? {
+              [winnerId]: winnerUser.coins,
+              [loserId]: loserUser.coins
+          } : undefined
         });
 
       } else {
+        // Check for Draw (Full Board)
+        const MAX_MOVES = 18 * 28; // 504
+        if (game.board.length >= MAX_MOVES) {
+            game.status = 'completed';
+            game.winner = null; // Draw
+            game.winnerId = null;
+
+            if (!isLive) await game.save();
+            else liveGames.delete(gameId);
+
+            if (!isLive) {
+                // Clear currentGame
+                await User.updateMany(
+                    { _id: { $in: [game.players.black, game.players.white] } },
+                    { $set: { currentGame: null } }
+                );
+
+                // Refund Bets
+                const p1 = await User.findById(game.players.black);
+                const p2 = await User.findById(game.players.white);
+                const bet = game.betAmount;
+
+                if (p1) {
+                    const oldBal = p1.coins;
+                    p1.coins += bet;
+                    p1.stats.gamesPlayed += 1;
+                    p1.stats.draws += 1;
+                    await p1.save();
+                    await logTransaction(p1._id, bet, 'REMBOURSEMENT', 'Match nul', oldBal, p1.coins, { gameId });
+                    
+                    // Find socket
+                    for (const [sId, data] of activePlayers.entries()) {
+                         if (data.userId === p1._id.toString()) io.to(sId).emit('balance_updated', p1.coins);
+                    }
+                }
+                if (p2) {
+                    const oldBal = p2.coins;
+                    p2.coins += bet;
+                    p2.stats.gamesPlayed += 1;
+                    p2.stats.draws += 1;
+                    await p2.save();
+                    await logTransaction(p2._id, bet, 'REMBOURSEMENT', 'Match nul', oldBal, p2.coins, { gameId });
+
+                    for (const [sId, data] of activePlayers.entries()) {
+                         if (data.userId === p2._id.toString()) io.to(sId).emit('balance_updated', p2.coins);
+                    }
+                }
+            }
+
+            // Clear active players
+            for (const [sId, data] of activePlayers.entries()) {
+                if (data.gameId === gameId) activePlayers.delete(sId);
+            }
+
+            io.to(gameId).emit('game_over', {
+                winner: null,
+                winnerId: null,
+                gains: 0,
+                reason: 'draw',
+                updatedCoins: !isLive ? {
+                    [game.players.black]: p1.coins,
+                    [game.players.white]: p2.coins
+                } : undefined
+            });
+            return;
+        }
+
         // Next turn
         game.currentTurn = player === 'black' ? 'white' : 'black';
         if (!isLive) {
@@ -1552,10 +1699,12 @@ module.exports = (io, socket) => {
                         
                         const winnerUser = await User.findById(opponentUserId);
                         if (winnerUser) {
+                            const oldBalance = winnerUser.coins;
                             winnerUser.coins += winnerGain;
                             winnerUser.stats.wins += 1;
                             winnerUser.stats.gamesPlayed += 1;
                             await winnerUser.save();
+                            await logTransaction(winnerUser._id, winnerGain, 'CREDIT', 'Gain victoire (abandon)', oldBalance, winnerUser.coins, { gameId, reason: 'resign' });
                             
                             if (opponentSocketId) {
                                 io.to(opponentSocketId).emit('balance_updated', winnerUser.coins);
@@ -1887,10 +2036,12 @@ module.exports = (io, socket) => {
                         
                         const winnerUser = await User.findById(opponentUserId);
                         if (winnerUser) {
+                            const oldBalance = winnerUser.coins;
                             winnerUser.coins += winnerGain;
                             winnerUser.stats.wins += 1;
                             winnerUser.stats.gamesPlayed += 1;
                             await winnerUser.save();
+                            await logTransaction(winnerUser._id, winnerGain, 'GAIN', 'Victoire par déconnexion', oldBalance, winnerUser.coins, { gameId });
                             
                             if (opponentSocketId) {
                                 io.to(opponentSocketId).emit('balance_updated', winnerUser.coins);
@@ -1938,11 +2089,14 @@ module.exports = (io, socket) => {
         // or we need to fetch User and refund.
         
         // Attempt refund
-        User.findById(p.userId).then(user => {
+        User.findById(p.userId).then(async user => {
             if(user) {
-                user.coins += parseInt(bet);
-                user.save();
-                console.log(`Refunded ${bet} to ${user.pseudo} on disconnect`);
+                const refundAmount = parseInt(bet);
+                const oldBalance = user.coins;
+                user.coins += refundAmount;
+                await user.save();
+                await logTransaction(user._id, refundAmount, 'REMBOURSEMENT', 'Déconnexion recherche', oldBalance, user.coins, { queueKey: bet });
+                console.log(`Refunded ${refundAmount} to ${user.pseudo} on disconnect`);
             }
         }).catch(err => console.error(err));
       }

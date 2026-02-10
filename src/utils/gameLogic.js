@@ -36,7 +36,7 @@ const checkWinner = (board, lastMove) => {
       c -= dy;
     }
 
-    if (count >= 5) return player;
+    if (count === 5) return player;
   }
 
   return null;
